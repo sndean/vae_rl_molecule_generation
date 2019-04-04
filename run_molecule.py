@@ -123,6 +123,7 @@ def molecule_arg_parser():
     parser.add_argument('--enc_conv_layer_num', type=int, default=3)
     parser.add_argument('--enc_mid_layer_num', type=int, default=3)
     parser.add_argument('--padding', type=str, default='right')  # left, right, none
+    parser.add_argument('--fusion_layer_num', type=int, default=3)
     return parser
 
 

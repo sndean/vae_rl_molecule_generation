@@ -197,17 +197,17 @@ class GCNPolicy(object):
             sample = cond_mean + cond_sample * tf.exp(cond_log_std)  # b*1*n
         else:
             sample = cond_sample
-        #print('hhhhhh: ', sample.shape)
-        sample = tf.expand_dims(sample, axis=-1)
-        ob_node_emb = tf.layers.dense(ob['node'], ob_space['node'].shape[2], activation=None, use_bias=False)
-        concat_vec = tf.concat([ob_node_emb, sample], axis=-1)  # b*1*n*(f+1)
-        fusion_emb = tf.layers.dense(concat_vec, 8, activation=None, use_bias=False, name='fusion_layer')
+        sample = tf.expand_dims(sample, axis=-1) #b*1*n*1
+        #ob_node_emb = tf.layers.dense(ob['node'], ob_space['node'].shape[2], activation=None, use_bias=False)
+        #concat_vec = tf.concat([ob_node_emb, sample], axis=-1)  # b*1*n*(f+1)
+        #fusion_emb = tf.layers.dense(concat_vec, 8, activation=None, use_bias=False, name='fusion_layer')
         self.ac_real = U.get_placeholder(name='ac_real', dtype=tf.int64, shape=[None, 4])  # feed groudtruth action
-        if args.has_cond:
-            ob_node = fusion_emb
-            print(ob_node.shape)
-        else:
-            ob_node = tf.layers.dense(ob['node'], 8, activation=None, use_bias=False, name='emb')  # embedding layer
+        # if args.has_cond:
+        #     ob_node = fusion_emb
+        #     print(ob_node.shape)
+        # else:
+        #     ob_node = tf.layers.dense(ob['node'], 8, activation=None, use_bias=False, name='emb')  # embedding layer
+        ob_node = tf.layers.dense(ob['node'], 8, activation=None, use_bias=False, name='emb')  # embedding layer
         if args.bn == 1:
             ob_node = tf.layers.batch_normalization(ob_node, axis=-1)
         if args.has_concat == 1:
@@ -226,12 +226,15 @@ class GCNPolicy(object):
             if args.bn == 1:
                 emb_node = tf.layers.batch_normalization(emb_node, axis=-1)
         emb_node = GCN_batch(ob['adj'], emb_node, args.emb_size, is_act=False, is_normalize=(args.bn == 0), name='gcn2', aggregate=args.gcn_aggregate)
+        sample = tf.squeeze(sample, axis=1)
         emb_node = tf.squeeze(emb_node, axis=1)  # B*v*h
-        # concat_emb = tf.concat([emb_node, sample], axis=-1)
-        # fusion_emb = tf.layers.dense(concat_emb, args.emb_size, activation=None, use_bias=False, name='fusion_layer')
+        concat_emb = tf.concat([emb_node, sample], axis=-1)
+        fusion_emb = tf.layers.dense(concat_emb, args.emb_size, activation=None, use_bias=False, name='fusion')
+        for i in range(args.fusion_layer_num-1):
+            fusion_emb = tf.layers.dense(fusion_emb, args.emb_size, activation=None, use_bias=False, name='fusion_layer_'+str(i))
         # #if args.has_cond == 1:
-        # if args.has_cond == 1:
-        #     emb_node = fusion_emb
+        if args.has_cond == 1:
+            emb_node = fusion_emb
         ### 1 only keep effective nodes
         # ob_mask = tf.cast(tf.transpose(tf.reduce_sum(ob['node'],axis=-1),[0,2,1]),dtype=tf.bool) # B*n*1
         ob_len = tf.reduce_sum(tf.squeeze(tf.cast(tf.cast(tf.reduce_sum(ob['node'], axis=-1), dtype=tf.bool), dtype=tf.float32), axis=-2), axis=-1)  # B
@@ -382,21 +385,22 @@ class GCNPolicy(object):
             self._act = U.function([stochastic, ob['adj'], ob['node'], cond_sample], [self.ac, self.vpred, debug])
 
     def encoder(self, args, smiles, max_atom_num):  # b * max_len * char_types
-        emb_smiles = tf.layers.conv1d(smiles, 8, 8, activation=tf.nn.tanh)
-        if args.bn == 1:
-            emb_smiles = tf.layers.batch_normalization(emb_smiles, axis=-1)
-        for j in range(args.enc_conv_layer_num - 1):
-            emb_smiles = tf.layers.conv1d(emb_smiles, 8, 8, activation=tf.nn.tanh)
+        with tf.variable_scope('cond_encoder', reuse=tf.AUTO_REUSE):
+            emb_smiles = tf.layers.conv1d(smiles, 8, 8, activation=tf.nn.tanh)
             if args.bn == 1:
                 emb_smiles = tf.layers.batch_normalization(emb_smiles, axis=-1)
-        emb_smiles = tf.layers.flatten(emb_smiles)
-        for i in range(args.enc_mid_layer_num-1):
-            emb_smiles = tf.layers.dense(emb_smiles, 50, activation=tf.nn.tanh)
-            if args.bn == 1:
-                emb_smiles = tf.layers.batch_normalization(emb_smiles, axis=-1)
-        cond_mean = tf.expand_dims(tf.layers.dense(emb_smiles, max_atom_num), axis=1)
-        cond_log_std = tf.expand_dims(tf.layers.dense(emb_smiles, max_atom_num), axis=1)
-        return cond_mean, cond_log_std
+            for j in range(args.enc_conv_layer_num - 1):
+                emb_smiles = tf.layers.conv1d(emb_smiles, 8, 8, activation=tf.nn.tanh)
+                if args.bn == 1:
+                    emb_smiles = tf.layers.batch_normalization(emb_smiles, axis=-1)
+            emb_smiles = tf.layers.flatten(emb_smiles)
+            for i in range(args.enc_mid_layer_num-1):
+                emb_smiles = tf.layers.dense(emb_smiles, 50, activation=tf.nn.tanh)
+                if args.bn == 1:
+                    emb_smiles = tf.layers.batch_normalization(emb_smiles, axis=-1)
+            cond_mean = tf.expand_dims(tf.layers.dense(emb_smiles, max_atom_num), axis=1)
+            cond_log_std = tf.expand_dims(tf.layers.dense(emb_smiles, max_atom_num), axis=1)
+            return cond_mean, cond_log_std
 
     def act(self, stochastic, ob):
         return self._act(stochastic, ob['adj'][None], ob['node'][None])
