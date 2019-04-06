@@ -419,16 +419,16 @@ def learn(args, env, policy_fn, *,
 
     var_list_pi = pi.get_trainable_variables()
     var_list_pi_stop = [var for var in var_list_pi if ('emb' in var.name) or ('gcn' in var.name) or ('stop' in var.name)]
-    var_list_encoder = [var for var in tf.global_variables() if 'cond_encoder' in var.name]
+    #var_list_encoder = [var for var in tf.global_variables() if 'cond_encoder' in var.name]
     var_list_d_step = [var for var in tf.global_variables() if 'd_step' in var.name]
     var_list_d_final = [var for var in tf.global_variables() if 'd_final' in var.name]
 
 
     ## loss update function
-    lossandgrad_ppo = U.function([ob['adj'], ob['node'], cond_smi_vec, cond_sample, ac, pi.ac_real, oldpi.ac_real, atarg, ret, lrmult], losses + [U.flatgrad(total_loss, var_list_pi)])
-    lossandgrad_expert = U.function([ob['adj'], ob['node'], cond_smi_vec, cond_sample, ac, pi.ac_real], [loss_expert, U.flatgrad(loss_expert, var_list_pi)])
+    lossandgrad_ppo = U.function([ob['adj'], ob['node'], cond_smi_vec, cond_sample, ac, pi.ac_real, oldpi.ac_real, atarg, ret, lrmult], losses + [kl_loss, U.flatgrad(total_loss+kl_loss, var_list_pi)])
+    lossandgrad_expert = U.function([ob['adj'], ob['node'], cond_smi_vec, cond_sample, ac, pi.ac_real], [loss_expert, kl_loss, U.flatgrad(loss_expert+kl_loss, var_list_pi)])
     lossandgrad_expert_stop = U.function([ob['adj'], ob['node'], cond_smi_vec, cond_sample, ac, pi.ac_real], [loss_expert, U.flatgrad(loss_expert, var_list_pi_stop)])
-    lossandgrad_kl = U.function([cond_smi_vec], [kl_loss, U.flatgrad(kl_loss, var_list_encoder)])
+    #lossandgrad_kl = U.function([cond_smi_vec], [kl_loss, U.flatgrad(kl_loss, var_list_encoder)])
     lossandgrad_d_step = U.function([ob_real['adj'], ob_real['node'], ob_gen['adj'], ob_gen['node']], [loss_d_step, U.flatgrad(loss_d_step, var_list_d_step)])
     lossandgrad_d_final = U.function([ob_real['adj'], ob_real['node'], ob_gen['adj'], ob_gen['node']], [loss_d_final, U.flatgrad(loss_d_final, var_list_d_final)])
     loss_g_gen_step_func = U.function([ob_gen['adj'], ob_gen['node'], cond_smi_vec], loss_g_step_gen)
@@ -437,7 +437,7 @@ def learn(args, env, policy_fn, *,
 
 
     adam_pi = MpiAdam(var_list_pi, epsilon=adam_epsilon)
-    adam_encoder = MpiAdam(var_list_encoder, epsilon=adam_epsilon)
+   # adam_encoder = MpiAdam(var_list_encoder, epsilon=adam_epsilon)
     adam_pi_stop = MpiAdam(var_list_pi_stop, epsilon=adam_epsilon)
     adam_d_step = MpiAdam(var_list_d_step, epsilon=adam_epsilon)
     adam_d_final = MpiAdam(var_list_d_final, epsilon=adam_epsilon)
@@ -477,7 +477,7 @@ def learn(args, env, policy_fn, *,
     U.initialize()
     if args.load == 1:
         try:
-            fname = './ckpt/' + args.name_full + '_' + args.reward_type + '_'+str(args.has_cond)+'_' +str(args.rl_start)+'_'+ str(int(args.recons_ratio))+'_'+str(int(args.qed_ratio))+'_'+str(4800)  # load
+            fname = './ckpt/' + args.name_full + '_' + args.reward_type + '_'+str(args.has_cond)+'_' +str(args.rl_start)+'_'+ str(int(args.recons_ratio))+'_'+str(int(args.qed_ratio))+'_'+str(1400)  # load
             sess = tf.get_default_session()
             # sess.run(tf.global_variables_initializer())
             saver = tf.train.Saver(var_list_pi)
@@ -563,10 +563,10 @@ def learn(args, env, policy_fn, *,
                 g_kl = 0
 
                 pretrain_shift = 5
-                batch = d.next_batch(optim_batchsize)
-                kl_loss, g_kl = lossandgrad_kl(batch["cond_smi_vec"])
-                kl_loss = np.mean(kl_loss)
-                adam_encoder.update(g_kl, optim_stepsize * cur_lrmult)
+                # batch = d.next_batch(optim_batchsize)
+                # kl_loss, g_kl = lossandgrad_kl(batch["cond_smi_vec"])
+                # kl_loss = np.mean(kl_loss)
+                # adam_encoder.update(g_kl, optim_stepsize * cur_lrmult)
                 ## Expert
                 if iters_so_far >= args.expert_start and iters_so_far <= args.expert_end + pretrain_shift:
                     ## Expert train
@@ -578,7 +578,7 @@ def learn(args, env, policy_fn, *,
                     ori_smi_vec = batch_smi2vec(args, env, ori_smi)
                     sample = np.random.randn(optim_batchsize, 1, ob_expert['node'].shape[-2])
                     #print(sample.shape)
-                    loss_expert,  g_expert = lossandgrad_expert(ob_expert['adj'], ob_expert['node'], ori_smi_vec, sample, ac_expert, ac_expert)
+                    loss_expert, kl_loss, g_expert = lossandgrad_expert(ob_expert['adj'], ob_expert['node'], ori_smi_vec, sample, ac_expert, ac_expert)
                     #expert_kl_loss, expert_g_kl = lossandgrad_kl(batch["cond_ob_adj"], batch["cond_ob_node"])
                     loss_expert = np.mean(loss_expert)
                     #expert_kl_loss = np.mean(expert_kl_loss)
@@ -586,14 +586,14 @@ def learn(args, env, policy_fn, *,
                 ## PPO
                 if iters_so_far >= args.rl_start and iters_so_far <= args.rl_end:
                     assign_old_eq_new()  # set old parameter values to new parameter values
-                    #batch = d.next_batch(optim_batchsize)
+                    batch = d.next_batch(optim_batchsize)
                     #rl_kl_loss, rl_g_kl = lossandgrad_kl(batch["cond_ob_adj"], batch["cond_ob_node"])
                     #rl_kl_loss = np.mean(rl_kl_loss)
                     #adam_encoder.update(rl_g_kl, optim_stepsize * cur_lrmult)
                     # ppo
                     # if args.has_ppo==1:
                     if iters_so_far >= args.rl_start+pretrain_shift: # start generator after discriminator trained a well..
-                        *newlosses, g_ppo = lossandgrad_ppo(batch["ob_adj"], batch["ob_node"], batch["cond_smi_vec"], batch["normal_cond_sample"], batch["ac"], batch["ac"], batch["ac"], batch["atarg"], batch["vtarg"], cur_lrmult)
+                        *newlosses, kl_loss, g_ppo = lossandgrad_ppo(batch["ob_adj"], batch["ob_node"], batch["cond_smi_vec"], batch["normal_cond_sample"], batch["ac"], batch["ac"], batch["ac"], batch["atarg"], batch["vtarg"], cur_lrmult)
                         losses_ppo = newlosses
 
                     if args.has_d_step == 1 and i_optim >= optim_epochs//2:
@@ -613,7 +613,7 @@ def learn(args, env, policy_fn, *,
                         adam_d_final.update(g_d_final, optim_stepsize * cur_lrmult)
                         # print(seg["ob_adj_final"].shape)
                         # logger.log(fmt_row(13, np.mean(losses, axis=0)))
-                #kl_loss = np.mean(kl_loss)
+                kl_loss = np.mean(kl_loss)
                 # update generator
                 # adam_pi_stop.update(0.1*g_expert_stop, optim_stepsize * cur_lrmult)
 
